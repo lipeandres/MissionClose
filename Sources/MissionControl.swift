@@ -1,5 +1,8 @@
 import Cocoa
 
+@_silgen_name("CGSMainConnectionID") private func CGSMainConnectionID() -> Int32
+@_silgen_name("CGSCopyManagedDisplaySpaces") private func CGSCopyManagedDisplaySpaces(_ connection: Int32) -> CFArray?
+
 enum MissionControl {
     /// The processes that may host the overview's accessibility tree: the Dock up to macOS 26,
     /// WindowManager on macOS 27.
@@ -33,14 +36,31 @@ enum MissionControl {
 
     static func root() -> AXUIElement? { roots().first }
 
-    /// Window thumbnails: the buttons in the overview, skipping Mission Control's Spaces bar.
+    /// The space each display is showing. Private CoreGraphics API; empty if it is unavailable.
+    private static func currentSpaceIDs() -> Set<Int> {
+        guard let displays = CGSCopyManagedDisplaySpaces(CGSMainConnectionID()) as? [[String: Any]] else { return [] }
+        return Set(displays.compactMap { ($0["Current Space"] as? [String: Any])?["id64"] as? Int })
+    }
+
+    /// Thumbnails are identified "<bundle id>.space.<space id>". The overview's tree also lists windows
+    /// from the other spaces, which would get buttons too, so keep only those on a visible space.
+    /// Thumbnails without that tag, or an unreadable space list, are kept.
+    private static func isOnCurrentSpace(_ e: AXUIElement, current: Set<Int>) -> Bool {
+        guard !current.isEmpty, let id = e.identifier, let range = id.range(of: ".space.", options: .backwards),
+              let space = Int(id[range.upperBound...]) else { return true }
+        return current.contains(space)
+    }
+
+    /// Window thumbnails: the buttons in the overview, skipping Mission Control's Spaces bar
+    /// and windows that live on other spaces.
     static func thumbnails(in mc: AXUIElement) -> [AXUIElement] {
         var result: [AXUIElement] = []
+        let current = currentSpaceIDs()
         func walk(_ e: AXUIElement, depth: Int) {
             guard depth < 8 else { return }
             if let id = e.identifier, id.hasPrefix("mc.spaces") { return }
             if e.role == kAXButtonRole as String, let f = e.frame, f.width > 40, f.height > 40 {
-                result.append(e)
+                if isOnCurrentSpace(e, current: current) { result.append(e) }
                 return
             }
             e.children.forEach { walk($0, depth: depth + 1) }
